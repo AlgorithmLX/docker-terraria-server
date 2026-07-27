@@ -7,8 +7,7 @@ Docker image for a Terraria dedicated server with an environment-variable UX sim
 ```yaml
 services:
   terraria:
-    image: algorithmlx/terra-srv:latest
-    build: .
+    image: algorithmlx/terra-server:latest
     ports:
       - "7777:7777/tcp"
       - "7777:7777/udp"
