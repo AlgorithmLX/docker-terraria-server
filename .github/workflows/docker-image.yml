@@ -49,11 +49,11 @@ jobs:
         shell: bash
         run: |
           ghcr_owner="${GITHUB_REPOSITORY_OWNER,,}"
-          image_names="ghcr.io/${ghcr_owner}/${IMAGE_NAME}"
+          image_names=""
           dockerhub_enabled=false
 
           if [[ -n "${DOCKERHUB_NAMESPACE}" && -n "${DOCKERHUB_REPOSITORY}" && -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_TOKEN}" ]]; then
-            image_names="${image_names}"$'\n'"${DOCKERHUB_NAMESPACE}/${DOCKERHUB_REPOSITORY}"
+            image_names="${DOCKERHUB_NAMESPACE}/${DOCKERHUB_REPOSITORY}"
             dockerhub_enabled=true
           fi
 
