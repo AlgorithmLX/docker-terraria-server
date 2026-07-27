@@ -46,6 +46,13 @@ Set `TYPE` to choose the server implementation.
 
 Vanilla `LATEST` is resolved from Terraria's dedicated-server API. For TML, `TML_VERSION` falls back to `VERSION`, then to a modpack `tmlversion.txt`, then to `LATEST`.
 
+Server binaries are cached under `/data/server`, so they survive container recreation as long as the `/data` volume is preserved. The container downloads the server archive again only when the resolved version changes, `FORCE_REINSTALL=TRUE`, or the cached install directory is removed.
+
+| Variable              | Default                     | Notes                           |
+|-----------------------|-----------------------------|---------------------------------|
+| `VANILLA_INSTALL_DIR` | `/data/server/vanilla`      | Vanilla dedicated server cache  |
+| `TML_INSTALL_DIR`     | `/data/server/tModLoader`   | tModLoader server cache         |
+
 ## Common Settings
 
 These variables render `/data/serverconfig.txt` when it does not exist. Set `OVERRIDE_SERVER_CONFIG=TRUE` to regenerate it on every start.
@@ -89,6 +96,7 @@ Use `TYPE=TML` for mods.
 environment:
   TYPE: TML
   TML_VERSION: LATEST
+  STEAM_LOBBY: NONE
   MODS: |
     https://example.com/CalamityMod.tmod
     https://example.com/MagicStorage.tmod
@@ -122,6 +130,25 @@ Relevant variables:
 | `TML_INSTALL_WORKSHOP_MODS` | `FALSE`                 | Runs tModLoader's `manage-tModLoaderServer.sh install-mods` when `install.txt` exists |
 
 For Workshop-based modpacks, place `install.txt` and `enabled.json` in `/data`, `/data/mods.txt` sources, or a zip. The container preserves them under `TML_MOD_PATH`. If you enable `TML_INSTALL_WORKSHOP_MODS`, tModLoader's own DedicatedServerUtils script is invoked.
+
+## tModLoader Steam Mode
+
+When `TYPE=TML`, the image adds a Steam multiplayer mode argument so tModLoader can start headless without prompting on stdin. The Docker default is no Steam lobby.
+
+| Variable                | Default | Notes                                                               |
+|-------------------------|---------|---------------------------------------------------------------------|
+| `STEAM_LOBBY`           | `NONE`  | `NONE`, `FRIENDS`, `FRIENDS_OF_FRIENDS`, `PRIVATE`, or `CUSTOM`     |
+| `STEAM_WORKSHOP_FOLDER` | empty   | Adds `-steamworkshopfolder <path>` when set                         |
+
+`STEAM_LOBBY` maps to tModLoader command-line arguments:
+
+| Value                | Arguments                                      |
+|----------------------|------------------------------------------------|
+| `NONE`               | `-nosteam`                                     |
+| `FRIENDS`            | `-steam -lobby friends`                        |
+| `FRIENDS_OF_FRIENDS` | `-steam -lobby friends -friendsoffriends`      |
+| `PRIVATE`            | `-steam -lobby private`                        |
+| `CUSTOM`             | Adds no Steam mode; use `EXTRA_ARGS` manually  |
 
 ## tModLoader Modpacks
 
@@ -165,18 +192,18 @@ The installer also accepts archives where that folder is nested one level deeper
 
 Relevant variables:
 
-| Variable                      | Default            | Notes                                                         |
-|-------------------------------|--------------------|---------------------------------------------------------------|
-| `MODPACK_SOURCE`              | empty              | URL, zip/tar archive, or directory to install                 |
-| `MODPACK_NAME`                | empty              | Overrides detected modpack name                               |
-| `MODPACK_SYNC`                | `FALSE`            | Removes files previously installed by another modpack         |
-| `MODPACK_USE_TML_VERSION`     | `TRUE`             | Uses `tmlversion.txt` when `TML_VERSION` is unset or `LATEST` |
-| `MODPACK_INSTALL_WORKSHOP`    | `TRUE`             | Runs TML `install-mods` when `install.txt` exists             |
-| `MODPACK_APPLY_WORLDS`        | `TRUE`             | Copies worlds from the modpack                                |
-| `MODPACK_APPLY_CONFIGS`       | `TRUE`             | Copies mod config files                                       |
-| `MODPACK_APPLY_SERVER_CONFIG` | `FALSE`            | Copies root `serverconfig.txt`                                |
-| `STEAMCMD_AUTO_INSTALL`       | `TRUE`             | Downloads SteamCMD bootstrap when Workshop mods need it       |
-| `STEAMCMD_DIR`                | `/server/steamcmd` | SteamCMD install directory                                    |
+| Variable                      | Default                 | Notes                                                         |
+|-------------------------------|-------------------------|---------------------------------------------------------------|
+| `MODPACK_SOURCE`              | empty                   | URL, zip/tar archive, or directory to install                 |
+| `MODPACK_NAME`                | empty                   | Overrides detected modpack name                               |
+| `MODPACK_SYNC`                | `FALSE`                 | Removes files previously installed by another modpack         |
+| `MODPACK_USE_TML_VERSION`     | `TRUE`                  | Uses `tmlversion.txt` when `TML_VERSION` is unset or `LATEST` |
+| `MODPACK_INSTALL_WORKSHOP`    | `TRUE`                  | Runs TML `install-mods` when `install.txt` exists             |
+| `MODPACK_APPLY_WORLDS`        | `TRUE`                  | Copies worlds from the modpack                                |
+| `MODPACK_APPLY_CONFIGS`       | `TRUE`                  | Copies mod config files                                       |
+| `MODPACK_APPLY_SERVER_CONFIG` | `FALSE`                 | Copies root `serverconfig.txt`                                |
+| `STEAMCMD_AUTO_INSTALL`       | `TRUE`                  | Downloads SteamCMD bootstrap when Workshop mods need it       |
+| `STEAMCMD_DIR`                | `/data/server/steamcmd` | SteamCMD install directory                               |
 
 To apply a modpack `serverconfig.txt` over an existing generated config:
 
@@ -214,4 +241,4 @@ Legacy `UID` and `GID` environment variables are also read by the entrypoint whe
 
 ## Updating
 
-Restart the container to let `VERSION=LATEST` or `TML_VERSION=LATEST` resolve the current upstream release. Set `FORCE_REINSTALL=TRUE` once if you need to reinstall the server files even when the resolved version did not change.
+Restart the container to let `VERSION=LATEST` or `TML_VERSION=LATEST` resolve the current upstream release. The image still resolves `LATEST` on startup, but it reuses `/data/server/...` when the installed version marker already matches. Set `FORCE_REINSTALL=TRUE` once if you need to reinstall the server files even when the resolved version did not change.

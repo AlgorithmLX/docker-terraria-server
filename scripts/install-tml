@@ -4,7 +4,7 @@ set -Eeuo pipefail
 
 source /image/scripts/common.sh
 
-install_dir="/server/tml"
+install_dir="${TML_INSTALL_DIR:-/data/server/tModLoader}"
 marker="${install_dir}/.installed-version"
 requested="$(trim "${TML_VERSION:-}")"
 

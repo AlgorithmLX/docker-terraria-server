@@ -13,7 +13,7 @@ if command -v steamcmd >/dev/null 2>&1; then
   exit 0
 fi
 
-install_dir="${STEAMCMD_DIR:-/server/steamcmd}"
+install_dir="${STEAMCMD_DIR:-/data/server/steamcmd}"
 steamcmd_path="$install_dir/steamcmd.sh"
 url="${STEAMCMD_URL:-https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz}"
 

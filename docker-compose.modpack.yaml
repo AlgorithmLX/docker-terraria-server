@@ -1,6 +1,5 @@
 services:
   terraria:
-    build: .
     image: algorithmlx/terra-server:latest
     container_name: terraria
     restart: unless-stopped

@@ -4,7 +4,7 @@ set -Eeuo pipefail
 
 source /image/scripts/common.sh
 
-install_dir="/server/vanilla"
+install_dir="${VANILLA_INSTALL_DIR:-/data/server/vanilla}"
 marker="${install_dir}/.installed-version"
 requested="${TERRARIA_VERSION:-}"
 requested="${requested:-${VERSION:-LATEST}}"

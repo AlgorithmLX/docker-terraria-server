@@ -6,6 +6,7 @@ source /image/scripts/common.sh
 
 type="$(normalize_type "${TYPE:-VANILLA}")"
 mods_dir="${TML_MOD_PATH:-/data/tModLoader/Mods}"
+tml_install_dir="${TML_INSTALL_DIR:-/data/server/tModLoader}"
 managed_manifest="/data/.managed-mods"
 new_manifest="$(mktemp)"
 tmp_dir="$(mktemp -d)"
@@ -170,19 +171,19 @@ elif [[ -n "$(trim "${MODPACK_SOURCE:-}")" ]] && truthy "${MODPACK_INSTALL_WORKS
 fi
 
 if truthy "$install_workshop_mods" && [[ -f "$mods_dir/install.txt" ]]; then
-  if [[ -x /server/tml/manage-tModLoaderServer.sh ]]; then
-    if [[ "$mods_dir" != "/server/tml/Mods" ]]; then
-      rm -rf /server/tml/Mods
-      ln -s "$mods_dir" /server/tml/Mods
+  if [[ -x "$tml_install_dir/manage-tModLoaderServer.sh" ]]; then
+    if [[ "$mods_dir" != "$tml_install_dir/Mods" ]]; then
+      rm -rf "$tml_install_dir/Mods"
+      ln -s "$mods_dir" "$tml_install_dir/Mods"
     fi
     if [[ -z "${STEAMCMDPATH:-}" ]] && ! command -v steamcmd >/dev/null 2>&1; then
       if truthy "${STEAMCMD_AUTO_INSTALL:-TRUE}"; then
         /image/scripts/install-steamcmd
-        export STEAMCMDPATH="${STEAMCMD_DIR:-/server/steamcmd}/steamcmd.sh"
+        export STEAMCMDPATH="${STEAMCMD_DIR:-/data/server/steamcmd}/steamcmd.sh"
       fi
     fi
     warn "Running tModLoader DedicatedServerUtils install-mods. SteamCMD may be required by tModLoader."
-    (cd /server/tml && ./manage-tModLoaderServer.sh install-mods --folder /server/tml) || die "tModLoader install-mods failed"
+    (cd "$tml_install_dir" && ./manage-tModLoaderServer.sh install-mods --folder "$tml_install_dir") || die "tModLoader install-mods failed"
   else
     warn "install.txt exists, but manage-tModLoaderServer.sh was not found in the tModLoader installation"
   fi

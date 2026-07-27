@@ -10,9 +10,44 @@ fifo="${CONSOLE_FIFO:-/tmp/terraria/console.fifo}"
 
 mkdir -p /data /server /tmp/terraria
 
+append_tml_steam_args() {
+  local lobby workshop_folder
+
+  lobby="$(trim "${STEAM_LOBBY:-NONE}")"
+  lobby="$(upper "$lobby")"
+  lobby="${lobby//-/_}"
+  lobby="${lobby// /_}"
+
+  case "$lobby" in
+    ""|NONE|NO|OFF|FALSE|DISABLED|DISABLE|0)
+      command+=("-nosteam")
+      ;;
+    FRIENDS)
+      command+=("-steam" "-lobby" "friends")
+      ;;
+    FRIENDS_OF_FRIENDS|FRIENDSOFFRIENDS|FOF)
+      command+=("-steam" "-lobby" "friends" "-friendsoffriends")
+      ;;
+    PRIVATE|INVITE|INVITE_ONLY|INVITEONLY)
+      command+=("-steam" "-lobby" "private")
+      ;;
+    CUSTOM|MANUAL|PASSTHROUGH)
+      ;;
+    *)
+      die "Invalid STEAM_LOBBY='${STEAM_LOBBY:-}'. Use NONE, FRIENDS, FRIENDS_OF_FRIENDS, PRIVATE, or CUSTOM."
+      ;;
+  esac
+
+  workshop_folder="$(trim "${STEAM_WORKSHOP_FOLDER:-}")"
+  if [[ -n "$workshop_folder" ]]; then
+    mkdir -p "$workshop_folder"
+    command+=("-steamworkshopfolder" "$workshop_folder")
+  fi
+}
+
 if [[ "$type" == "VANILLA" ]]; then
   /image/scripts/install-vanilla
-  install_dir="/server/vanilla"
+  install_dir="${VANILLA_INSTALL_DIR:-/data/server/vanilla}"
   if [[ -x "$install_dir/TerrariaServer.bin.x86_64" ]]; then
     server_bin="$install_dir/TerrariaServer.bin.x86_64"
   elif [[ -x "$install_dir/TerrariaServer" ]]; then
@@ -24,9 +59,10 @@ if [[ "$type" == "VANILLA" ]]; then
 else
   /image/scripts/prepare-modpack
   /image/scripts/install-tml
-  install_dir="/server/tml"
+  install_dir="${TML_INSTALL_DIR:-/data/server/tModLoader}"
   /image/scripts/manage-mods
   command=("$install_dir/start-tModLoaderServer.sh" "-config" "$config_path" "-tmlsavedirectory" "${TML_SAVE_DIR:-/data/tModLoader}")
+  append_tml_steam_args
 fi
 
 /image/scripts/render-config "$config_path"
