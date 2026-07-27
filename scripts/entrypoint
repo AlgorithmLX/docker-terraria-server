@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+source /image/scripts/common.sh
+
+if [[ "${1:-}" == "send-command" ]]; then
+  shift
+  exec /image/scripts/send-command "$@"
+fi
+
+if [[ $# -gt 0 && "${1:0:1}" != "-" ]]; then
+  exec "$@"
+fi
+
+run_uid="${TERRARIA_UID:-$(printenv UID 2>/dev/null || true)}"
+run_gid="${TERRARIA_GID:-$(printenv GID 2>/dev/null || true)}"
+run_uid="${run_uid:-1000}"
+run_gid="${run_gid:-1000}"
+
+if [[ "$(id -u)" == "0" ]]; then
+  mkdir -p /data /server /tmp/terraria /home/terraria
+
+  if ! truthy "${SKIP_CHOWN:-FALSE}"; then
+    chown -R "${run_uid}:${run_gid}" /data /server /tmp/terraria /home/terraria
+  fi
+
+  export HOME=/data
+  exec gosu "${run_uid}:${run_gid}" /image/scripts/start "$@"
+fi
+
+export HOME="${HOME:-/data}"
+exec /image/scripts/start "$@"

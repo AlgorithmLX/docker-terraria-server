@@ -1,0 +1,23 @@
+services:
+  terraria:
+    build: .
+    image: algorithmlx/terra-server:latest
+    container_name: terraria
+    restart: unless-stopped
+    tty: true
+    stdin_open: true
+    ports:
+      - "7777:7777/tcp"
+      - "7777:7777/udp"
+    environment:
+      TYPE: TML
+      VERSION: LATEST
+      MODPACK_SOURCE: modpacks/MyModpack.zip
+      MODPACK_NAME: MyModpack
+      MODPACK_INSTALL_WORKSHOP: "TRUE"
+      WORLD_NAME: world
+      AUTOCREATE: "2"
+      DIFFICULTY: "0"
+      MAX_PLAYERS: "8"
+    volumes:
+      - ./data:/data

@@ -1,6 +1,10 @@
-data
-testdata
-examples
-k8s-examples
-.idea
 .git
+.github
+.idea
+.vscode
+data
+*.log
+*.tmp
+*.zip
+*.tar
+*.tar.gz

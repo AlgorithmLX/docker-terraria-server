@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+source /image/scripts/common.sh
+
+type="$(normalize_type "${TYPE:-VANILLA}")"
+mods_dir="${TML_MOD_PATH:-/data/tModLoader/Mods}"
+managed_manifest="/data/.managed-mods"
+new_manifest="$(mktemp)"
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir" "$new_manifest"' EXIT
+
+if [[ "$type" != "TML" ]]; then
+  if [[ -n "$(trim "${MODS:-}")" || -n "$(trim "${MODS_FILE:-}")" || -n "$(trim "${ENABLED_MODS:-}")" ]]; then
+    warn "Mods require TYPE=TML; mod-related variables were ignored"
+  fi
+  exit 0
+fi
+
+mkdir -p "$mods_dir"
+
+if [[ -f /data/.managed-modpack-mods ]]; then
+  cat /data/.managed-modpack-mods >> "$new_manifest"
+fi
+
+copy_tmod() {
+  local src="$1"
+  local dest="$mods_dir/$(basename "$src")"
+  cp -f "$src" "$dest"
+  printf '%s\n' "$dest" >> "$new_manifest"
+  log "Installed mod $(basename "$dest")"
+}
+
+copy_enabled_json() {
+  local src="$1"
+  cp -f "$src" "$mods_dir/enabled.json"
+  log "Installed enabled.json"
+}
+
+copy_install_txt() {
+  local src="$1"
+  cp -f "$src" "$mods_dir/install.txt"
+  log "Installed install.txt"
+}
+
+process_file() {
+  local file="$1"
+  local lower_name
+  lower_name="$(lower "$(basename "$file")")"
+
+  case "$lower_name" in
+    *.tmod)
+      copy_tmod "$file"
+      ;;
+    *.zip)
+      local extract_dir
+      extract_dir="$(mktemp -d "$tmp_dir/modzip.XXXXXX")"
+      unzip -q "$file" -d "$extract_dir"
+      while IFS= read -r nested; do
+        process_file "$nested"
+      done < <(find "$extract_dir" -type f \( -name '*.tmod' -o -name 'enabled.json' -o -name 'install.txt' \))
+      ;;
+    enabled.json)
+      if [[ -z "$(trim "${ENABLED_MODS:-}")" && -z "$(trim "${ENABLED_MODS_FILE:-}")" ]]; then
+        copy_enabled_json "$file"
+      fi
+      ;;
+    install.txt)
+      copy_install_txt "$file"
+      ;;
+    *)
+      warn "Ignoring unsupported mod source file: $file"
+      ;;
+  esac
+}
+
+process_source() {
+  local source="$1"
+  local resolved="$source"
+
+  if is_url "$source"; then
+    local name
+    name="$(safe_basename_from_url "$source")"
+    [[ -n "$name" && "$name" != "/" ]] || name="downloaded-mod"
+    resolved="$tmp_dir/$name"
+    download "$source" "$resolved" "${MODS_FORCE_DOWNLOAD:-FALSE}"
+  elif [[ "$source" == file://* ]]; then
+    resolved="${source#file://}"
+  elif [[ ! "$source" = /* ]]; then
+    if [[ -e "/data/$source" ]]; then
+      resolved="/data/$source"
+    fi
+  fi
+
+  if [[ -d "$resolved" ]]; then
+    while IFS= read -r nested; do
+      process_file "$nested"
+    done < <(find "$resolved" -type f \( -name '*.tmod' -o -name '*.zip' -o -name 'enabled.json' -o -name 'install.txt' \))
+  elif [[ -f "$resolved" ]]; then
+    process_file "$resolved"
+  else
+    warn "Mod source does not exist and was skipped: $source"
+  fi
+}
+
+if [[ -n "$(trim "${MODS_FILE:-}")" ]]; then
+  mods_file="${MODS_FILE}"
+  [[ "$mods_file" = /* ]] || mods_file="/data/$mods_file"
+  if [[ -f "$mods_file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line="${line%%#*}"
+      line="$(trim "$line")"
+      [[ -z "$line" ]] && continue
+      process_source "$line"
+    done < "$mods_file"
+  else
+    warn "MODS_FILE was set but not found: $mods_file"
+  fi
+fi
+
+if [[ -f /data/mods.txt ]]; then
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"
+    line="$(trim "$line")"
+    [[ -z "$line" ]] && continue
+    process_source "$line"
+  done < /data/mods.txt
+fi
+
+while IFS= read -r source; do
+  process_source "$source"
+done < <(split_values "${MODS:-}")
+
+if [[ -n "$(trim "${ENABLED_MODS_FILE:-}")" ]]; then
+  enabled_file="${ENABLED_MODS_FILE}"
+  [[ "$enabled_file" = /* ]] || enabled_file="/data/$enabled_file"
+  [[ -f "$enabled_file" ]] || die "ENABLED_MODS_FILE was set but not found: $enabled_file"
+  copy_enabled_json "$enabled_file"
+elif [[ -n "$(trim "${ENABLED_MODS:-}")" ]]; then
+  split_values "$ENABLED_MODS" | jq -R . | jq -s . > "$mods_dir/enabled.json"
+  log "Generated enabled.json from ENABLED_MODS"
+elif truthy "${MODS_ENABLE_ALL:-FALSE}"; then
+  find "$mods_dir" -maxdepth 1 -type f -name '*.tmod' -printf '%f\n' \
+    | sed 's/\.tmod$//' \
+    | sort \
+    | jq -R . \
+    | jq -s . > "$mods_dir/enabled.json"
+  log "Generated enabled.json for all .tmod files"
+fi
+
+if truthy "${MODS_SYNC:-FALSE}" && [[ -f "$managed_manifest" ]]; then
+  sort -u "$new_manifest" -o "$new_manifest"
+  while IFS= read -r old_file || [[ -n "$old_file" ]]; do
+    [[ "$old_file" == "$mods_dir"/* ]] || continue
+    if ! grep -Fxq "$old_file" "$new_manifest"; then
+      rm -f "$old_file"
+      log "Removed unmanaged old mod $(basename "$old_file")"
+    fi
+  done < "$managed_manifest"
+fi
+
+sort -u "$new_manifest" > "$managed_manifest"
+
+install_workshop_mods=FALSE
+if truthy "${TML_INSTALL_WORKSHOP_MODS:-FALSE}"; then
+  install_workshop_mods=TRUE
+elif [[ -n "$(trim "${MODPACK_SOURCE:-}")" ]] && truthy "${MODPACK_INSTALL_WORKSHOP:-TRUE}"; then
+  install_workshop_mods=TRUE
+fi
+
+if truthy "$install_workshop_mods" && [[ -f "$mods_dir/install.txt" ]]; then
+  if [[ -x /server/tml/manage-tModLoaderServer.sh ]]; then
+    if [[ "$mods_dir" != "/server/tml/Mods" ]]; then
+      rm -rf /server/tml/Mods
+      ln -s "$mods_dir" /server/tml/Mods
+    fi
+    if [[ -z "${STEAMCMDPATH:-}" ]] && ! command -v steamcmd >/dev/null 2>&1; then
+      if truthy "${STEAMCMD_AUTO_INSTALL:-TRUE}"; then
+        /image/scripts/install-steamcmd
+        export STEAMCMDPATH="${STEAMCMD_DIR:-/server/steamcmd}/steamcmd.sh"
+      fi
+    fi
+    warn "Running tModLoader DedicatedServerUtils install-mods. SteamCMD may be required by tModLoader."
+    (cd /server/tml && ./manage-tModLoaderServer.sh install-mods --folder /server/tml) || die "tModLoader install-mods failed"
+  else
+    warn "install.txt exists, but manage-tModLoaderServer.sh was not found in the tModLoader installation"
+  fi
+fi

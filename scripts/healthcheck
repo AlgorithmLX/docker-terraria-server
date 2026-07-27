@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+port="${PORT:-7777}"
+method="${HEALTH_METHOD:-tcp}"
+
+if [[ "$method" == "process" ]]; then
+  pgrep -f 'TerrariaServer|tModLoader' >/dev/null
+  exit $?
+fi
+
+timeout 3 bash -c "cat < /dev/null > /dev/tcp/127.0.0.1/${port}" >/dev/null 2>&1

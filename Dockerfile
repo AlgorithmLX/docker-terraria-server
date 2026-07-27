@@ -1,104 +1,108 @@
-ARG BASE_IMAGE=eclipse-temurin:25-jre
-FROM ${BASE_IMAGE}
+FROM debian:bookworm-slim
 
-# hook into docker BuildKit --platform support
-# see https://docs.docker.com/engine/reference/builder/#automatic-platform-args-in-the-global-scope
-ARG TARGETOS
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 ARG TARGETARCH
-ARG TARGETVARIANT
+ARG TERRARIA_UID=1000
+ARG TERRARIA_GID=1000
 
-# The following three arg/env vars get used by the platform specific "install-packages" script
-ARG EXTRA_DEB_PACKAGES=""
-ARG EXTRA_DNF_PACKAGES=""
-ARG EXTRA_ALPINE_PACKAGES=""
-ARG FORCE_INSTALL_PACKAGES=1
-ARG KNOCKD_VERSION=0.8.1
-ARG KNOCKD_REPO_ORG=Metalcape/knock
-RUN --mount=target=/build,source=build \
-    TARGET=${TARGETARCH}${TARGETVARIANT} \
-    /build/run.sh install-packages
-COPY --from=tianon/gosu /gosu /usr/local/bin/
+RUN if [[ -n "${TARGETARCH}" && "${TARGETARCH}" != "amd64" ]]; then \
+      echo "Terraria dedicated server and tModLoader are supported by this image on linux/amd64 only"; \
+      exit 1; \
+    fi
 
-RUN --mount=target=/build,source=build \
-    /build/run.sh setup-user
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+      bash \
+      ca-certificates \
+      coreutils \
+      curl \
+      file \
+      findutils \
+      gosu \
+      jq \
+      libc6-i386 \
+      lib32gcc-s1 \
+      lib32stdc++6 \
+      libcurl4 \
+      libgcc-s1 \
+      libgssapi-krb5-2 \
+      libicu72 \
+      libssl3 \
+      libstdc++6 \
+      procps \
+      tar \
+      tzdata \
+      unzip \
+      xz-utils \
+      zlib1g \
+    && rm -rf /var/lib/apt/lists/*
 
-EXPOSE 25565
+RUN groupadd --gid "${TERRARIA_GID}" terraria \
+    && useradd --uid "${TERRARIA_UID}" --gid terraria --home-dir /home/terraria --create-home --shell /bin/bash terraria \
+    && mkdir -p /data /server /image/scripts /tmp/terraria \
+    && chown -R terraria:terraria /data /server /tmp/terraria /home/terraria
 
-ARG APPS_REV=1
-ARG GITHUB_BASEURL=https://github.com
+COPY --chmod=755 scripts/ /image/scripts/
 
-# renovate: datasource=github-releases packageName=itzg/easy-add
-ARG EASY_ADD_VERSION=0.8.15
-ADD ${GITHUB_BASEURL}/itzg/easy-add/releases/download/${EASY_ADD_VERSION}/easy-add_${TARGETOS}_${TARGETARCH}${TARGETVARIANT} /usr/bin/easy-add
-RUN chmod +x /usr/bin/easy-add
+RUN ln -s /image/scripts/send-command /usr/local/bin/send-command
 
-# renovate: datasource=github-releases packageName=itzg/restify
-ARG RESTIFY_VERSION=1.7.17
-RUN easy-add --var os=${TARGETOS} --var arch=${TARGETARCH}${TARGETVARIANT} \
-  --var version=${RESTIFY_VERSION} --var app=restify --file {{.app}} \
-  --from ${GITHUB_BASEURL}/itzg/{{.app}}/releases/download/{{.version}}/{{.app}}_{{.version}}_{{.os}}_{{.arch}}.tar.gz
-
-# renovate: datasource=github-releases packageName=itzg/rcon-cli
-ARG RCON_CLI_VERSION=1.7.6
-RUN easy-add --var os=${TARGETOS} --var arch=${TARGETARCH}${TARGETVARIANT} \
-  --var version=${RCON_CLI_VERSION} --var app=rcon-cli --file {{.app}} \
-  --from ${GITHUB_BASEURL}/itzg/{{.app}}/releases/download/{{.version}}/{{.app}}_{{.version}}_{{.os}}_{{.arch}}.tar.gz
-
-# renovate: datasource=github-releases packageName=itzg/mc-monitor
-ARG MC_MONITOR_VERSION=0.16.11
-RUN easy-add --var os=${TARGETOS} --var arch=${TARGETARCH}${TARGETVARIANT} \
-  --var version=${MC_MONITOR_VERSION} --var app=mc-monitor --file {{.app}} \
-  --from ${GITHUB_BASEURL}/itzg/{{.app}}/releases/download/{{.version}}/{{.app}}_{{.version}}_{{.os}}_{{.arch}}.tar.gz
-
-# renovate: datasource=github-releases packageName=itzg/mc-server-runner
-ARG MC_SERVER_RUNNER_VERSION=1.15.1
-RUN easy-add --var os=${TARGETOS} --var arch=${TARGETARCH}${TARGETVARIANT} \
-  --var version=${MC_SERVER_RUNNER_VERSION} --var app=mc-server-runner --file {{.app}} \
-  --from ${GITHUB_BASEURL}/itzg/{{.app}}/releases/download/{{.version}}/{{.app}}_{{.version}}_{{.os}}_{{.arch}}.tar.gz
-
-# renovate: datasource=github-releases packageName=itzg/mc-image-helper versioning=loose
-ARG MC_HELPER_VERSION=1.63.1
-ARG MC_HELPER_BASE_URL=${GITHUB_BASEURL}/itzg/mc-image-helper/releases/download/${MC_HELPER_VERSION}
-# used for cache busting local copy of mc-image-helper
-ARG MC_HELPER_REV=1
-RUN curl -fsSL ${MC_HELPER_BASE_URL}/mc-image-helper-${MC_HELPER_VERSION}.tgz \
-  | tar -C /usr/share -zxf - \
-    && ln -s /usr/share/mc-image-helper-${MC_HELPER_VERSION}/ /usr/share/mc-image-helper \
-    && ln -s /usr/share/mc-image-helper/bin/mc-image-helper /usr/bin
-
+EXPOSE 7777/tcp 7777/udp
 VOLUME ["/data"]
 WORKDIR /data
-
 STOPSIGNAL SIGTERM
 
-# End user MUST set EULA and change RCON_PASSWORD
-ENV TYPE=VANILLA VERSION=LATEST EULA="" UID=1000 GID=1000 LC_ALL=en_US.UTF-8
+ENV TYPE=VANILLA \
+    VERSION=LATEST \
+    TERRARIA_VERSION= \
+    TML_VERSION= \
+    TML_CHANNEL=stable \
+    PORT=7777 \
+    WORLD_NAME=world \
+    WORLD= \
+    WORLD_PATH= \
+    AUTOCREATE=2 \
+    DIFFICULTY=0 \
+    MAX_PLAYERS=8 \
+    PASSWORD= \
+    MOTD="Welcome to Terraria" \
+    LANGUAGE=en-US \
+    SECURE=1 \
+    UPNP=0 \
+    NPC_STREAM=60 \
+    PRIORITY=1 \
+    WORLD_ROLLBACKS_TO_KEEP=2 \
+    BANLIST=/data/banlist.txt \
+    SERVER_CONFIG=/data/serverconfig.txt \
+    OVERRIDE_SERVER_CONFIG=FALSE \
+    FORCE_REINSTALL=FALSE \
+    ENABLE_COMMAND_PIPE=TRUE \
+    CONSOLE_FIFO=/tmp/terraria/console.fifo \
+    MODS= \
+    MODS_FILE= \
+    MODS_SYNC=FALSE \
+    MODS_FORCE_DOWNLOAD=FALSE \
+    MODS_ENABLE_ALL=FALSE \
+    ENABLED_MODS= \
+    ENABLED_MODS_FILE= \
+    MODPACK= \
+    MODPACK_SOURCE= \
+    MODPACK_NAME= \
+    MODPACK_SYNC=FALSE \
+    MODPACK_USE_TML_VERSION=TRUE \
+    MODPACK_INSTALL_WORKSHOP=TRUE \
+    MODPACK_APPLY_SERVER_CONFIG=FALSE \
+    MODPACK_APPLY_WORLDS=TRUE \
+    MODPACK_APPLY_CONFIGS=TRUE \
+    TML_SAVE_DIR=/data/tModLoader \
+    TML_MOD_PATH=/data/tModLoader/Mods \
+    TML_INSTALL_WORKSHOP_MODS=FALSE \
+    STEAMCMD_AUTO_INSTALL=TRUE \
+    STEAMCMD_DIR=/server/steamcmd \
+    STEAMCMD_URL=https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz \
+    EXTRA_ARGS= \
+    EXTRA_CONFIG=
 
-COPY --chmod=755 scripts/start* /image/scripts/
+HEALTHCHECK --start-period=120s --interval=30s --timeout=5s --retries=3 CMD ["/image/scripts/healthcheck"]
 
-# Backward compatible shim for those with legacy entrypoint
-COPY --chmod=755 <<EOF /start
-#!/bin/bash
-exec /image/scripts/start
-EOF
-
-COPY --chmod=755 scripts/auto/* /image/scripts/auto/
-COPY --chmod=755 scripts/shims/* /image/scripts/shims/
-RUN ln -s /image/scripts/shims/* /usr/local/bin/
-COPY --chmod=755 files/* /image/
-
-RUN curl -fsSL -o /image/Log4jPatcher.jar https://github.com/CreeperHost/Log4jPatcher/releases/download/v1.0.1/Log4jPatcher-1.0.1.jar
-
-RUN dos2unix /image/scripts/start* /image/scripts/auto/*
-
-ENTRYPOINT [ "/image/scripts/start" ]
-HEALTHCHECK --start-period=2m --retries=2 --interval=30s CMD mc-health
-
-ARG BUILDTIME=local
-ARG VERSION=local
-ARG REVISION=local
-COPY <<EOF /etc/image.properties
-buildtime=${BUILDTIME}
-version=${VERSION}
-revision=${REVISION}
-EOF
+ENTRYPOINT ["/image/scripts/entrypoint"]

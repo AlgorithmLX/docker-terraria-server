@@ -1,54 +1,78 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# shellcheck source=start-utils
-. "$(dirname "$0")/start-utils"
+set -Eeuo pipefail
 
-# The Dockerfile ENVs take precedence here, but defaulting for testing consistency
-: "${UID:=1000}"
-: "${GID:=1000}"
-: "${SKIP_CHOWN_DATA:=false}"
+source /image/scripts/common.sh
 
-umask "${UMASK:=0002}"
+type="$(normalize_type "${TYPE:-VANILLA}")"
+config_path="${SERVER_CONFIG:-/data/serverconfig.txt}"
+fifo="${CONSOLE_FIFO:-/tmp/terraria/console.fifo}"
 
-# Remove from previous run and do this as elevated user since file used to be created before demoting
-rm -f "$HOME/.rcon-cli.env"
+mkdir -p /data /server /tmp/terraria
 
-if ! isTrue "${SKIP_SUDO:-false}" && [ "$(id -u)" = 0 ]; then
-  runAsUser=minecraft
-  runAsGroup=minecraft
-
-  if [[ -v UID ]]; then
-    if [[ $UID != 0 ]]; then
-      if [[ $UID != $(id -u minecraft) ]]; then
-        log "Changing uid of minecraft to $UID"
-        usermod -u $UID minecraft
-      fi
-    else
-      runAsUser=root
-    fi
+if [[ "$type" == "VANILLA" ]]; then
+  /image/scripts/install-vanilla
+  install_dir="/server/vanilla"
+  if [[ -x "$install_dir/TerrariaServer.bin.x86_64" ]]; then
+    server_bin="$install_dir/TerrariaServer.bin.x86_64"
+  elif [[ -x "$install_dir/TerrariaServer" ]]; then
+    server_bin="$install_dir/TerrariaServer"
+  else
+    die "Could not find a runnable Vanilla Terraria server binary in $install_dir"
   fi
-
-  if [[ -v GID ]]; then
-    if [[ $GID != 0 ]]; then
-      if [[ $GID != $(id -g minecraft) ]]; then
-        log "Changing gid of minecraft to $GID"
-        groupmod -o -g "$GID" minecraft
-      fi
-    else
-      runAsGroup=root
-    fi
-  fi
-
-  if isFalse "${SKIP_CHOWN_DATA}" && [[ $(stat -c "%u" /data) != "$UID" ]]; then
-    log "Changing ownership of /data to $UID ..."
-    chown -R ${runAsUser}:${runAsGroup} /data
-  fi
-
-  if [[ ${SKIP_NSSWITCH_CONF^^} != TRUE ]]; then
-    echo 'hosts: files dns' > /etc/nsswitch.conf
-  fi
-
-  exec gosu ${runAsUser}:${runAsGroup} "$(dirname "$0")/start-configuration" "$@"
+  command=("$server_bin" "-config" "$config_path")
 else
-  exec "$(dirname "$0")/start-configuration" "$@"
+  /image/scripts/prepare-modpack
+  /image/scripts/install-tml
+  install_dir="/server/tml"
+  /image/scripts/manage-mods
+  command=("$install_dir/start-tModLoaderServer.sh" "-config" "$config_path" "-tmlsavedirectory" "${TML_SAVE_DIR:-/data/tModLoader}")
+fi
+
+/image/scripts/render-config "$config_path"
+
+if [[ -n "$(trim "${EXTRA_ARGS:-}")" ]]; then
+  # EXTRA_ARGS is intentionally shell-split to match Docker-style single-string env configuration.
+  # Prefer serverconfig variables for values that contain spaces.
+  read -r -a extra_args <<< "${EXTRA_ARGS}"
+  command+=("${extra_args[@]}")
+fi
+
+log "Starting $type server on port ${PORT:-7777}"
+
+server_pid=""
+
+shutdown() {
+  local status=$?
+  trap - INT TERM
+
+  if [[ -n "${server_pid:-}" ]] && kill -0 "$server_pid" 2>/dev/null; then
+    log "Stopping Terraria server"
+    if [[ -p "$fifo" ]]; then
+      printf 'exit\n' > "$fifo" || true
+      sleep "${STOP_WAIT_SECONDS:-10}" || true
+    fi
+
+    if kill -0 "$server_pid" 2>/dev/null; then
+      kill -TERM "$server_pid" 2>/dev/null || true
+      wait "$server_pid" 2>/dev/null || true
+    fi
+  fi
+
+  exit "$status"
+}
+
+trap shutdown INT TERM
+
+if truthy "${ENABLE_COMMAND_PIPE:-TRUE}"; then
+  rm -f "$fifo"
+  mkfifo "$fifo"
+  exec 3<>"$fifo"
+  "${command[@]}" <&3 &
+  server_pid="$!"
+  wait "$server_pid"
+else
+  "${command[@]}" &
+  server_pid="$!"
+  wait "$server_pid"
 fi

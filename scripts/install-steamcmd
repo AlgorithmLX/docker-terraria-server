@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+source /image/scripts/common.sh
+
+if [[ -n "${STEAMCMDPATH:-}" ]]; then
+  [[ -x "$STEAMCMDPATH" ]] || die "STEAMCMDPATH is set but not executable: $STEAMCMDPATH"
+  exit 0
+fi
+
+if command -v steamcmd >/dev/null 2>&1; then
+  exit 0
+fi
+
+install_dir="${STEAMCMD_DIR:-/server/steamcmd}"
+steamcmd_path="$install_dir/steamcmd.sh"
+url="${STEAMCMD_URL:-https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz}"
+
+if [[ -x "$steamcmd_path" ]]; then
+  exit 0
+fi
+
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+mkdir -p "$install_dir"
+archive="$tmp_dir/steamcmd_linux.tar.gz"
+download "$url" "$archive" "${STEAMCMD_FORCE_DOWNLOAD:-FALSE}"
+tar -xzf "$archive" -C "$install_dir"
+chmod +x "$steamcmd_path"
+
+log "Installed SteamCMD bootstrap at $steamcmd_path"

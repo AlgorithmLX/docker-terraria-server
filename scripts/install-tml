@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+source /image/scripts/common.sh
+
+install_dir="/server/tml"
+marker="${install_dir}/.installed-version"
+requested="$(trim "${TML_VERSION:-}")"
+
+if [[ -z "$(trim "$requested")" ]]; then
+  requested="${VERSION:-LATEST}"
+fi
+
+requested="$(trim "$requested")"
+requested="${requested:-LATEST}"
+channel="$(lower "${TML_CHANNEL:-stable}")"
+modpack_tml_version_file="/data/.modpack-tml-version"
+
+normalize_tml_tag() {
+  local value
+  value="$(trim "$1")"
+  value="${value#v}"
+  printf 'v%s' "$(printf '%s' "$value" | sed -E 's/\.([0-9])\./\.0\1\./g')"
+}
+
+if [[ "$(upper "$requested")" == "LATEST" ]] && truthy "${MODPACK_USE_TML_VERSION:-TRUE}" && [[ -f "$modpack_tml_version_file" ]]; then
+  requested="$(trim "$(head -n 1 "$modpack_tml_version_file")")"
+  requested="${requested:-LATEST}"
+  if [[ "$(upper "$requested")" != "LATEST" ]]; then
+    log "Using tModLoader version from modpack: $requested"
+  fi
+fi
+
+resolve_tml_release() {
+  local version="$1"
+
+  if is_url "$version"; then
+    printf '%s\t%s\n' "$(safe_basename_from_url "$version")" "$version"
+    return
+  fi
+
+  if [[ "$(upper "$version")" == "LATEST" ]]; then
+    local api
+    if [[ "$channel" == "preview" ]]; then
+      api="https://api.github.com/repos/tModLoader/tModLoader/releases?per_page=50"
+      curl -fsSL "$api" \
+        | jq -r '
+            [.[] | select(.draft | not)
+              | select(.prerelease == true or (.name | test("preview"; "i")))
+              | . as $release
+              | $release.assets[]
+              | select(.name == "tModLoader.zip")
+              | [$release.tag_name, .browser_download_url]]
+            | first
+            | @tsv'
+      return
+    fi
+
+    api="https://api.github.com/repos/tModLoader/tModLoader/releases/latest"
+    curl -fsSL "$api" \
+      | jq -r '. as $release | .assets[] | select(.name == "tModLoader.zip") | [$release.tag_name, .browser_download_url] | @tsv'
+    return
+  fi
+
+  local tag="$version"
+  tag="$(normalize_tml_tag "$tag")"
+  printf '%s\thttps://github.com/tModLoader/tModLoader/releases/download/%s/tModLoader.zip\n' "$tag" "$tag"
+}
+
+release_line="$(resolve_tml_release "$requested")"
+[[ -n "$release_line" && "$release_line" != "null" ]] || die "Could not resolve tModLoader release for TML_VERSION='$requested'"
+
+if [[ "$release_line" == *$'\t'* ]]; then
+  resolved_tag="${release_line%%$'\t'*}"
+  download_url="${release_line#*$'\t'}"
+else
+  resolved_tag="$requested"
+  download_url="$release_line"
+fi
+
+if [[ -f "$marker" ]] && [[ "$(cat "$marker")" == "$resolved_tag" ]] && ! truthy "${FORCE_REINSTALL:-FALSE}"; then
+  log "tModLoader $resolved_tag is already installed"
+  exit 0
+fi
+
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+archive="$tmp_dir/tModLoader.zip"
+download "$download_url" "$archive" "${MODS_FORCE_DOWNLOAD:-FALSE}"
+
+rm -rf "$install_dir"
+mkdir -p "$install_dir"
+unzip -q "$archive" -d "$tmp_dir/extracted"
+
+if [[ -f "$tmp_dir/extracted/start-tModLoaderServer.sh" ]]; then
+  cp -a "$tmp_dir/extracted/." "$install_dir/"
+else
+  first_dir="$(find "$tmp_dir/extracted" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+  [[ -n "$first_dir" ]] || die "Downloaded tModLoader archive is empty"
+  cp -a "$first_dir/." "$install_dir/"
+fi
+
+find "$install_dir" -type f \( -name '*.sh' -o -name '*.bin.x86_64' -o -name 'TerrariaServer*' \) -exec chmod +x {} +
+find "$install_dir" -type f -name '*.sh' -exec sed -i 's/\r$//' {} +
+
+[[ -f "$install_dir/start-tModLoaderServer.sh" ]] || die "tModLoader archive does not contain start-tModLoaderServer.sh"
+printf '%s' "$resolved_tag" > "$marker"
+
+log "Installed tModLoader $resolved_tag"

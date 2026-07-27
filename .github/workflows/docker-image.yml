@@ -1,0 +1,142 @@
+name: Docker Image
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+    inputs:
+      push:
+        description: "Push image to configured registries"
+        required: true
+        default: true
+        type: boolean
+      platforms:
+        description: "Target platforms"
+        required: true
+        default: "linux/amd64"
+        type: string
+
+env:
+  IMAGE_NAME: terra-server
+  DEFAULT_PLATFORMS: linux/amd64
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    env:
+      DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE || secrets.DOCKERHUB_NAMESPACE }}
+      DOCKERHUB_REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY || secrets.DOCKERHUB_REPOSITORY }}
+      DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME || secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set image names
+        id: images
+        shell: bash
+        run: |
+          ghcr_owner="${GITHUB_REPOSITORY_OWNER,,}"
+          image_names="ghcr.io/${ghcr_owner}/${IMAGE_NAME}"
+          dockerhub_enabled=false
+
+          if [[ -n "${DOCKERHUB_NAMESPACE}" && -n "${DOCKERHUB_REPOSITORY}" && -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_TOKEN}" ]]; then
+            image_names="${image_names}"$'\n'"${DOCKERHUB_NAMESPACE}/${DOCKERHUB_REPOSITORY}"
+            dockerhub_enabled=true
+          fi
+
+          {
+            echo "dockerhub_enabled=${dockerhub_enabled}"
+            echo "names<<EOF"
+            echo "${image_names}"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Report Docker Hub configuration
+        shell: bash
+        run: |
+          report_var() {
+            local name="$1"
+            local value="$2"
+            if [[ -n "$value" ]]; then
+              echo "${name}: set"
+            else
+              echo "${name}: missing"
+            fi
+          }
+
+          report_var "DOCKERHUB_NAMESPACE" "${DOCKERHUB_NAMESPACE}"
+          report_var "DOCKERHUB_REPOSITORY" "${DOCKERHUB_REPOSITORY}"
+          report_var "DOCKERHUB_USERNAME" "${DOCKERHUB_USERNAME}"
+          report_var "DOCKERHUB_TOKEN" "${DOCKERHUB_TOKEN}"
+
+          if [[ "${{ steps.images.outputs.dockerhub_enabled }}" == "true" ]]; then
+            echo "Docker Hub publishing: enabled"
+          else
+            echo "::notice title=Docker Hub publishing disabled::Set DOCKERHUB_NAMESPACE, DOCKERHUB_REPOSITORY, DOCKERHUB_USERNAME, and DOCKERHUB_TOKEN as repository variables/secrets."
+          fi
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.images.outputs.names }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+          labels: |
+            org.opencontainers.image.title=Docker Terraria Server
+            org.opencontainers.image.description=Terraria dedicated server with Vanilla and tModLoader support
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.push)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.push) && steps.images.outputs.dockerhub_enabled == 'true'
+        uses: docker/login-action@v4
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ github.event_name == 'workflow_dispatch' && inputs.platforms || env.DEFAULT_PLATFORMS }}
+          push: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.push) }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

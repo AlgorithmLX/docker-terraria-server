@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+source /image/scripts/common.sh
+
+install_dir="/server/vanilla"
+marker="${install_dir}/.installed-version"
+requested="${TERRARIA_VERSION:-}"
+requested="${requested:-${VERSION:-LATEST}}"
+requested="$(trim "$requested")"
+requested="${requested:-LATEST}"
+
+resolve_vanilla_download() {
+  local version="$1"
+
+  if is_url "$version"; then
+    printf '%s\n%s\n' "$version" "$(safe_basename_from_url "$version")"
+    return
+  fi
+
+  if [[ "$(upper "$version")" == "LATEST" ]]; then
+    local latest_name
+    latest_name="$(curl -fsSL https://terraria.org/api/get/dedicated-servers-names | jq -r '.[0]')"
+    [[ -n "$latest_name" && "$latest_name" != "null" ]] || die "Could not resolve latest Terraria dedicated server release"
+    printf 'https://terraria.org/api/download/pc-dedicated-server/%s\n%s\n' "$latest_name" "$latest_name"
+    return
+  fi
+
+  local build
+  build="$(version_digits "$version")"
+  [[ -n "$build" ]] || die "Invalid Terraria VERSION='$version'"
+  printf 'https://terraria.org/api/download/pc-dedicated-server/terraria-server-%s.zip\nterraria-server-%s.zip\n' "$build" "$build"
+}
+
+mapfile -t resolved < <(resolve_vanilla_download "$requested")
+download_url="${resolved[0]}"
+download_name="${resolved[1]}"
+resolved_version="$(version_digits "$download_name")"
+
+if [[ -f "$marker" ]] && [[ "$(cat "$marker")" == "$resolved_version" ]] && ! truthy "${FORCE_REINSTALL:-FALSE}"; then
+  log "Vanilla Terraria $resolved_version is already installed"
+  exit 0
+fi
+
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+archive="$tmp_dir/$download_name"
+download "$download_url" "$archive" "${MODS_FORCE_DOWNLOAD:-FALSE}"
+
+rm -rf "$install_dir"
+mkdir -p "$install_dir"
+unzip -q "$archive" -d "$tmp_dir/extracted"
+
+linux_dir="$(find "$tmp_dir/extracted" -type d -name Linux | head -n 1)"
+[[ -n "$linux_dir" ]] || die "Downloaded Terraria archive does not contain a Linux server directory"
+
+cp -a "$linux_dir/." "$install_dir/"
+chmod +x "$install_dir"/TerrariaServer* || true
+printf '%s' "$resolved_version" > "$marker"
+
+log "Installed Vanilla Terraria server $resolved_version"

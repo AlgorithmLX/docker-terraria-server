@@ -1,0 +1,23 @@
+services:
+  terraria:
+    build: .
+    image: algorithmlx/terra-server:latest
+    container_name: terraria
+    restart: unless-stopped
+    tty: true
+    stdin_open: true
+    ports:
+      - "7777:7777/tcp"
+      - "7777:7777/udp"
+    environment:
+      TYPE: VANILLA
+      VERSION: LATEST
+      WORLD_NAME: world
+      AUTOCREATE: "2"
+      DIFFICULTY: "0"
+      MAX_PLAYERS: "8"
+      PASSWORD: ""
+      MOTD: "Welcome to Terraria"
+      OVERRIDE_SERVER_CONFIG: "FALSE"
+    volumes:
+      - ./data:/data

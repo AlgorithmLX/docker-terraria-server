@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+fifo="${CONSOLE_FIFO:-/tmp/terraria/console.fifo}"
+
+if [[ $# -eq 0 ]]; then
+  printf 'Usage: send-command "command text"\n' >&2
+  exit 64
+fi
+
+[[ -p "$fifo" ]] || {
+  printf 'Terraria command pipe is not available at %s. Set ENABLE_COMMAND_PIPE=TRUE and restart the container.\n' "$fifo" >&2
+  exit 1
+}
+
+printf '%s\n' "$*" > "$fifo"

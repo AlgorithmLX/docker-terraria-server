@@ -1,9 +1,0 @@
-services:
-  mc:
-    build: .
-    environment:
-      EULA: "TRUE"
-    ports:
-    - 25565:25565
-    stdin_open: true
-    tty: true

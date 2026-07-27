@@ -1,0 +1,239 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+source /image/scripts/common.sh
+
+type="$(normalize_type "${TYPE:-VANILLA}")"
+source_spec="$(trim "${MODPACK_SOURCE:-}")"
+
+if [[ -z "$source_spec" ]]; then
+  exit 0
+fi
+
+if [[ "$type" != "TML" ]]; then
+  warn "MODPACK_SOURCE requires TYPE=TML; modpack was ignored"
+  exit 0
+fi
+
+save_dir="${TML_SAVE_DIR:-/data/tModLoader}"
+mods_dir="${TML_MOD_PATH:-$save_dir/Mods}"
+server_config="${SERVER_CONFIG:-/data/serverconfig.txt}"
+managed_mods="/data/.managed-modpack-mods"
+managed_files="/data/.managed-modpack-files"
+new_mods="$(mktemp)"
+new_files="$(mktemp)"
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir" "$new_mods" "$new_files"' EXIT
+
+mkdir -p "$save_dir" "$mods_dir"
+
+resolve_source() {
+  local source="$1"
+  local resolved="$source"
+
+  if is_url "$source"; then
+    local name
+    name="$(safe_basename_from_url "$source")"
+    [[ -n "$name" && "$name" != "/" ]] || name="modpack.zip"
+    resolved="$tmp_dir/$name"
+    download "$source" "$resolved" "${MODPACK_FORCE_DOWNLOAD:-${MODS_FORCE_DOWNLOAD:-FALSE}}"
+  elif [[ "$source" == file://* ]]; then
+    resolved="${source#file://}"
+  elif [[ ! "$source" = /* && -e "/data/$source" ]]; then
+    resolved="/data/$source"
+  fi
+
+  printf '%s' "$resolved"
+}
+
+strip_archive_ext() {
+  local name="$1"
+  name="${name%%\?*}"
+  name="$(basename "$name")"
+  case "$(lower "$name")" in
+    *.tar.gz) name="${name%.tar.gz}" ;;
+    *.tgz) name="${name%.tgz}" ;;
+    *.zip) name="${name%.zip}" ;;
+    *) name="${name%.*}" ;;
+  esac
+  printf '%s' "$name"
+}
+
+has_pack_markers() {
+  local dir="$1"
+  [[ -d "$dir/Mods" || -d "$dir/Worlds" || -d "$dir/ModConfigs" || -f "$dir/tmlversion.txt" || -f "$dir/serverconfig.txt" || -f "$dir/enabled.json" || -f "$dir/install.txt" ]]
+}
+
+find_pack_root() {
+  local root="$1"
+
+  if has_pack_markers "$root"; then
+    printf '%s' "$root"
+    return
+  fi
+
+  local candidate
+  while IFS= read -r candidate; do
+    if has_pack_markers "$candidate"; then
+      printf '%s' "$candidate"
+      return
+    fi
+  done < <(find "$root" -mindepth 1 -maxdepth 4 -type d | sort)
+
+  local children
+  mapfile -t children < <(find "$root" -mindepth 1 -maxdepth 1 -type d | sort)
+  if [[ "${#children[@]}" -eq 1 ]]; then
+    printf '%s' "${children[0]}"
+  else
+    printf '%s' "$root"
+  fi
+}
+
+record_file() {
+  local file="$1"
+  printf '%s\n' "$file" >> "$new_files"
+}
+
+copy_file() {
+  local src="$1"
+  local dest="$2"
+  mkdir -p "$(dirname "$dest")"
+  cp -f "$src" "$dest"
+  record_file "$dest"
+}
+
+copy_tree() {
+  local src="$1"
+  local dest="$2"
+
+  [[ -d "$src" ]] || return 0
+
+  mkdir -p "$dest"
+  cp -a "$src/." "$dest/"
+  while IFS= read -r src_file; do
+    local rel="${src_file#$src/}"
+    record_file "$dest/$rel"
+  done < <(find "$src" -type f)
+}
+
+copy_mods_from() {
+  local src="$1"
+
+  [[ -d "$src" ]] || return 0
+
+  while IFS= read -r tmod; do
+    local dest="$mods_dir/$(basename "$tmod")"
+    copy_file "$tmod" "$dest"
+    printf '%s\n' "$dest" >> "$new_mods"
+    log "Installed modpack mod $(basename "$dest")"
+  done < <(find "$src" -maxdepth 1 -type f -name '*.tmod' | sort)
+
+  [[ -f "$src/enabled.json" ]] && copy_file "$src/enabled.json" "$mods_dir/enabled.json"
+  [[ -f "$src/install.txt" ]] && copy_file "$src/install.txt" "$mods_dir/install.txt"
+  [[ -f "$src/tmlversion.txt" ]] && copy_file "$src/tmlversion.txt" "$mods_dir/tmlversion.txt"
+  [[ -d "$src/ModPacks" ]] && copy_tree "$src/ModPacks" "$mods_dir/ModPacks"
+}
+
+resolved_source="$(resolve_source "$source_spec")"
+[[ -e "$resolved_source" ]] || die "MODPACK_SOURCE does not exist: $source_spec"
+
+if [[ -d "$resolved_source" ]]; then
+  extracted_root="$resolved_source"
+elif [[ -f "$resolved_source" ]]; then
+  case "$(lower "$resolved_source")" in
+    *.zip)
+      unzip -q "$resolved_source" -d "$tmp_dir/modpack"
+      extracted_root="$tmp_dir/modpack"
+      ;;
+    *.tar.gz|*.tgz)
+      mkdir -p "$tmp_dir/modpack"
+      tar -xzf "$resolved_source" -C "$tmp_dir/modpack"
+      extracted_root="$tmp_dir/modpack"
+      ;;
+    *)
+      die "Unsupported MODPACK_SOURCE file type: $resolved_source"
+      ;;
+  esac
+else
+  die "MODPACK_SOURCE is not a file or directory: $source_spec"
+fi
+
+pack_root="$(find_pack_root "$extracted_root")"
+pack_name="$(trim "${MODPACK_NAME:-}")"
+if [[ -z "$pack_name" ]]; then
+  first_modpack_json=""
+  if [[ -d "$pack_root/Mods/ModPacks" ]]; then
+    first_modpack_json="$(find "$pack_root/Mods/ModPacks" -maxdepth 1 -type f -name '*.json' | sort | head -n 1)"
+  elif [[ -d "$pack_root/ModPacks" ]]; then
+    first_modpack_json="$(find "$pack_root/ModPacks" -maxdepth 1 -type f -name '*.json' | sort | head -n 1)"
+  fi
+
+  if [[ -n "$first_modpack_json" ]]; then
+    pack_name="$(basename "$first_modpack_json" .json)"
+  fi
+fi
+
+if [[ -z "$pack_name" ]]; then
+  if [[ -d "$resolved_source" ]]; then
+    pack_name="$(basename "$pack_root")"
+  else
+    pack_name="$(strip_archive_ext "$source_spec")"
+  fi
+fi
+
+if [[ -n "$pack_name" && "$pack_name" != "." && "$pack_name" != "/" ]]; then
+  printf '%s\n' "$pack_name" > /data/.modpack-name
+  log "Preparing modpack $pack_name"
+else
+  rm -f /data/.modpack-name
+  log "Preparing modpack"
+fi
+
+if [[ -f "$pack_root/tmlversion.txt" ]]; then
+  copy_file "$pack_root/tmlversion.txt" "$save_dir/tmlversion.txt"
+  trim "$(head -n 1 "$pack_root/tmlversion.txt")" > /data/.modpack-tml-version
+elif [[ -f "$pack_root/Mods/tmlversion.txt" ]]; then
+  trim "$(head -n 1 "$pack_root/Mods/tmlversion.txt")" > /data/.modpack-tml-version
+else
+  rm -f /data/.modpack-tml-version
+fi
+
+if [[ -d "$pack_root/Mods" ]]; then
+  copy_mods_from "$pack_root/Mods"
+else
+  copy_mods_from "$pack_root"
+fi
+
+if truthy "${MODPACK_APPLY_WORLDS:-TRUE}"; then
+  [[ -d "$pack_root/Worlds" ]] && copy_tree "$pack_root/Worlds" "$save_dir/Worlds"
+fi
+
+if truthy "${MODPACK_APPLY_CONFIGS:-TRUE}"; then
+  [[ -d "$pack_root/ModConfigs" ]] && copy_tree "$pack_root/ModConfigs" "$save_dir/ModConfigs"
+fi
+
+if truthy "${MODPACK_APPLY_SERVER_CONFIG:-FALSE}" && [[ -f "$pack_root/serverconfig.txt" ]]; then
+  if [[ ! -f "$server_config" || "$(upper "${OVERRIDE_SERVER_CONFIG:-FALSE}")" == "MODPACK" ]]; then
+    copy_file "$pack_root/serverconfig.txt" "$server_config"
+    log "Installed modpack serverconfig.txt"
+  else
+    warn "Modpack serverconfig.txt was found but $server_config already exists; set MODPACK_APPLY_SERVER_CONFIG=TRUE and OVERRIDE_SERVER_CONFIG=MODPACK to replace it"
+  fi
+fi
+
+if truthy "${MODPACK_SYNC:-TRUE}" && [[ -f "$managed_files" ]]; then
+  sort -u "$new_files" -o "$new_files"
+  while IFS= read -r old_file || [[ -n "$old_file" ]]; do
+    [[ -n "$old_file" ]] || continue
+    if ! grep -Fxq "$old_file" "$new_files"; then
+      rm -f "$old_file"
+      log "Removed old modpack file $old_file"
+    fi
+  done < "$managed_files"
+fi
+
+sort -u "$new_mods" > "$managed_mods"
+sort -u "$new_files" > "$managed_files"
+
+log "Modpack preparation complete"
