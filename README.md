@@ -129,6 +129,8 @@ Relevant variables:
 | `ENABLED_MODS_FILE`         | empty                   | Copies an existing `enabled.json`                                                     |
 | `MODPACK`                   | empty                   | Adds `modpack=<name>` to server config                                                |
 | `TML_INSTALL_WORKSHOP_MODS` | `FALSE`                 | Runs tModLoader's `manage-tModLoaderServer.sh install-mods` when `install.txt` exists |
+| `TML_MANAGE_SCRIPT_REF`     | `stable`                | Git ref used to download tModLoader's management script                               |
+| `TML_MANAGE_SCRIPT_URL`     | empty                   | Overrides the management script download URL                                          |
 
 For Workshop-based modpacks, place `install.txt` and `enabled.json` in `/data`, `/data/mods.txt` sources, or a zip. The container preserves them under `TML_MOD_PATH`. If you enable `TML_INSTALL_WORKSHOP_MODS`, tModLoader's own DedicatedServerUtils script is invoked.
 
@@ -215,6 +217,8 @@ Relevant variables:
 | `MODPACK_APPLY_SERVER_CONFIG` | `FALSE`                 | Copies root `serverconfig.txt`                                |
 | `STEAMCMD_AUTO_INSTALL`       | `TRUE`                  | Downloads SteamCMD bootstrap when Workshop mods need it       |
 | `STEAMCMD_DIR`                | `/data/server/steamcmd` | SteamCMD install directory                                    |
+| `TML_MANAGE_SCRIPT_REF`       | `stable`                | Git ref used to download tModLoader's management script       |
+| `TML_MANAGE_SCRIPT_URL`       | empty                   | Overrides the management script download URL                  |
 
 To apply a modpack `serverconfig.txt` over an existing generated config:
 

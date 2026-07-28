@@ -159,6 +159,22 @@ record_workshop_ids_from_install_txt() {
   done < "$src"
 }
 
+ensure_tml_management_script() {
+  local script="$tml_install_dir/manage-tModLoaderServer.sh"
+  local ref="${TML_MANAGE_SCRIPT_REF:-stable}"
+  local url="${TML_MANAGE_SCRIPT_URL:-}"
+
+  if [[ -z "$(trim "$url")" ]]; then
+    url="https://raw.githubusercontent.com/tModLoader/tModLoader/$ref/patches/tModLoader/Terraria/release_extras/DedicatedServerUtils/manage-tModLoaderServer.sh"
+  fi
+
+  if [[ ! -x "$script" ]] || truthy "${TML_MANAGE_SCRIPT_FORCE_DOWNLOAD:-FALSE}"; then
+    download "$url" "$script" "${TML_MANAGE_SCRIPT_FORCE_DOWNLOAD:-FALSE}"
+    chmod +x "$script"
+    log "Installed tModLoader management script"
+  fi
+}
+
 generate_enabled_json_from_installed_tmods() {
   local names_file output count workshop_content_dir id item_dir
 
@@ -322,6 +338,7 @@ elif [[ -n "$(trim "${MODPACK_SOURCE:-}")" ]] && truthy "${MODPACK_INSTALL_WORKS
 fi
 
 if truthy "$install_workshop_mods" && [[ -f "$mods_dir/install.txt" ]]; then
+  ensure_tml_management_script
   if [[ -x "$tml_install_dir/manage-tModLoaderServer.sh" ]]; then
     if [[ "$mods_dir" != "$tml_install_dir/Mods" ]]; then
       rm -rf "$tml_install_dir/Mods"
