@@ -110,6 +110,7 @@ Supported mod sources:
 - `.tmod` files from HTTP(S), `/data`, or absolute container paths
 - `.zip` files containing `.tmod`, `enabled.json`, or `install.txt`
 - directories containing `.tmod`, `.zip`, `enabled.json`, or `install.txt`
+- Steam Workshop collection URLs from `steamcommunity.com`
 - `/data/mods.txt`, one source per line, comments with `#`
 - `MODS_FILE`, same format as `/data/mods.txt`
 
@@ -130,6 +131,16 @@ Relevant variables:
 | `TML_INSTALL_WORKSHOP_MODS` | `FALSE`                 | Runs tModLoader's `manage-tModLoaderServer.sh install-mods` when `install.txt` exists |
 
 For Workshop-based modpacks, place `install.txt` and `enabled.json` in `/data`, `/data/mods.txt` sources, or a zip. The container preserves them under `TML_MOD_PATH`. If you enable `TML_INSTALL_WORKSHOP_MODS`, tModLoader's own DedicatedServerUtils script is invoked.
+
+You can also provide a public Steam Workshop collection URL directly in `MODS` or a mods file:
+
+```yaml
+environment:
+  TYPE: TML
+  MODS: "https://steamcommunity.com/sharedfiles/filedetails/?id=<collection-id>"
+```
+
+Collection URLs are resolved to the collection's Workshop item IDs and written to `install.txt`. Workshop installation is run automatically for collection sources. If no `enabled.json`, `ENABLED_MODS`, or `ENABLED_MODS_FILE` is present, the container attempts to generate `enabled.json` from the downloaded `.tmod` filenames. Set `MODS_ENABLE_ALL=TRUE` to regenerate `enabled.json` from all installed `.tmod` files on every start.
 
 ## tModLoader Steam Mode
 
@@ -203,7 +214,7 @@ Relevant variables:
 | `MODPACK_APPLY_CONFIGS`       | `TRUE`                  | Copies mod config files                                       |
 | `MODPACK_APPLY_SERVER_CONFIG` | `FALSE`                 | Copies root `serverconfig.txt`                                |
 | `STEAMCMD_AUTO_INSTALL`       | `TRUE`                  | Downloads SteamCMD bootstrap when Workshop mods need it       |
-| `STEAMCMD_DIR`                | `/data/server/steamcmd` | SteamCMD install directory                               |
+| `STEAMCMD_DIR`                | `/data/server/steamcmd` | SteamCMD install directory                                    |
 
 To apply a modpack `serverconfig.txt` over an existing generated config:
 

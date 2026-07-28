@@ -9,8 +9,14 @@ mods_dir="${TML_MOD_PATH:-/data/tModLoader/Mods}"
 tml_install_dir="${TML_INSTALL_DIR:-/data/server/tModLoader}"
 managed_manifest="/data/.managed-mods"
 new_manifest="$(mktemp)"
+workshop_install_entries="$(mktemp)"
+workshop_source_ids="$(mktemp)"
 tmp_dir="$(mktemp -d)"
-trap 'rm -rf "$tmp_dir" "$new_manifest"' EXIT
+trap 'rm -rf "$tmp_dir" "$new_manifest" "$workshop_install_entries" "$workshop_source_ids"' EXIT
+workshop_install_entries_present=FALSE
+steam_workshop_collection_sources=FALSE
+enabled_json_configured=FALSE
+enabled_json_from_env=FALSE
 
 if [[ "$type" != "TML" ]]; then
   if [[ -n "$(trim "${MODS:-}")" || -n "$(trim "${MODS_FILE:-}")" || -n "$(trim "${ENABLED_MODS:-}")" ]]; then
@@ -36,13 +42,154 @@ copy_tmod() {
 copy_enabled_json() {
   local src="$1"
   cp -f "$src" "$mods_dir/enabled.json"
+  enabled_json_configured=TRUE
   log "Installed enabled.json"
 }
 
 copy_install_txt() {
   local src="$1"
-  cp -f "$src" "$mods_dir/install.txt"
-  log "Installed install.txt"
+  local line count=0
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"
+    line="$(trim "$line")"
+    [[ -z "$line" ]] && continue
+
+    if [[ "$line" =~ ^[0-9]+$ ]]; then
+      printf '%s\n' "$line" >> "$workshop_install_entries"
+      printf '%s\n' "$line" >> "$workshop_source_ids"
+      count=$((count + 1))
+    else
+      warn "Ignoring non-numeric workshop id in install.txt: $line"
+    fi
+  done < "$src"
+
+  if [[ "$count" -gt 0 ]]; then
+    workshop_install_entries_present=TRUE
+    log "Queued install.txt with $count workshop item(s)"
+  else
+    warn "install.txt contained no workshop item ids: $src"
+  fi
+}
+
+is_steam_workshop_url() {
+  local source_lower
+  source_lower="$(lower "${1:-}")"
+  [[ "$source_lower" =~ ^https?://(www\.)?steamcommunity\.com/(sharedfiles|workshop)/filedetails/ ]]
+}
+
+steam_published_file_id_from_url() {
+  local source="$1"
+
+  if [[ "$source" =~ (^|[\?\&])id=([0-9]+) ]]; then
+    printf '%s' "${BASH_REMATCH[2]}"
+    return 0
+  fi
+
+  return 1
+}
+
+queue_workshop_id() {
+  local id="$1"
+
+  [[ "$id" =~ ^[0-9]+$ ]] || die "Invalid Steam Workshop item id: $id"
+
+  printf '%s\n' "$id" >> "$workshop_install_entries"
+  printf '%s\n' "$id" >> "$workshop_source_ids"
+  workshop_install_entries_present=TRUE
+}
+
+process_steam_workshop_collection() {
+  local source="$1"
+  local collection_id response result ids_file count
+
+  collection_id="$(steam_published_file_id_from_url "$source")" || die "Steam Workshop URL does not contain an id parameter: $source"
+
+  log "Resolving Steam Workshop collection $collection_id"
+  response="$(curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 20 \
+    -X POST \
+    --data-urlencode "collectioncount=1" \
+    --data-urlencode "publishedfileids[0]=$collection_id" \
+    "https://api.steampowered.com/ISteamRemoteStorage/GetCollectionDetails/v1/")" \
+    || die "Could not resolve Steam Workshop collection $collection_id"
+
+  result="$(jq -r '.response.collectiondetails[0].result // empty' <<< "$response")"
+  [[ "$result" == "1" ]] || die "Steam Workshop collection $collection_id could not be read"
+
+  ids_file="$tmp_dir/steam-collection-$collection_id.ids"
+  jq -r '.response.collectiondetails[0].children[]?.publishedfileid' <<< "$response" > "$ids_file"
+  count="$(wc -l < "$ids_file" | tr -d '[:space:]')"
+  [[ "$count" -gt 0 ]] || die "Steam Workshop collection $collection_id contains no public workshop items"
+
+  while IFS= read -r id || [[ -n "$id" ]]; do
+    [[ -z "$id" ]] && continue
+    queue_workshop_id "$id"
+  done < "$ids_file"
+
+  steam_workshop_collection_sources=TRUE
+  log "Resolved Steam Workshop collection $collection_id with $count workshop item(s)"
+}
+
+write_install_txt() {
+  local output tmp_output count
+
+  truthy "$workshop_install_entries_present" || return 0
+
+  output="$mods_dir/install.txt"
+  tmp_output="$tmp_dir/install.txt"
+  awk '!seen[$0]++' "$workshop_install_entries" > "$tmp_output"
+  count="$(wc -l < "$tmp_output" | tr -d '[:space:]')"
+  [[ "$count" -gt 0 ]] || return 0
+
+  cp -f "$tmp_output" "$output"
+  log "Installed install.txt with $count workshop item(s)"
+}
+
+record_workshop_ids_from_install_txt() {
+  local src="$1"
+  local line
+
+  [[ -f "$src" ]] || return 0
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"
+    line="$(trim "$line")"
+    [[ "$line" =~ ^[0-9]+$ ]] || continue
+    printf '%s\n' "$line" >> "$workshop_source_ids"
+  done < "$src"
+}
+
+generate_enabled_json_from_installed_tmods() {
+  local names_file output count workshop_content_dir id item_dir
+
+  names_file="$tmp_dir/enabled-mod-names"
+  output="$mods_dir/enabled.json"
+  : > "$names_file"
+
+  find "$mods_dir" -maxdepth 1 -type f -name '*.tmod' -printf '%f\n' 2>/dev/null \
+    | sed 's/\.tmod$//' >> "$names_file"
+
+  workshop_content_dir="$tml_install_dir/steamapps/workshop/content/1281930"
+  if [[ -d "$workshop_content_dir" && -s "$workshop_source_ids" ]]; then
+    while IFS= read -r id || [[ -n "$id" ]]; do
+      [[ "$id" =~ ^[0-9]+$ ]] || continue
+      item_dir="$workshop_content_dir/$id"
+      [[ -d "$item_dir" ]] || continue
+      find "$item_dir" -type f -name '*.tmod' -printf '%f\n' 2>/dev/null \
+        | sed 's/\.tmod$//' >> "$names_file"
+    done < <(awk '!seen[$0]++' "$workshop_source_ids")
+  fi
+
+  sort -u "$names_file" | jq -R . | jq -s . > "$output"
+  count="$(jq 'length' "$output")"
+
+  if [[ "$count" -gt 0 ]]; then
+    enabled_json_configured=TRUE
+    log "Generated enabled.json for $count installed mod(s)"
+  else
+    rm -f "$output"
+    warn "Could not generate enabled.json because no installed .tmod files were found"
+  fi
 }
 
 process_file() {
@@ -80,7 +227,10 @@ process_source() {
   local source="$1"
   local resolved="$source"
 
-  if is_url "$source"; then
+  if is_steam_workshop_url "$source"; then
+    process_steam_workshop_collection "$source"
+    return
+  elif is_url "$source"; then
     local name
     name="$(safe_basename_from_url "$source")"
     [[ -n "$name" && "$name" != "/" ]] || name="downloaded-mod"
@@ -133,21 +283,20 @@ while IFS= read -r source; do
   process_source "$source"
 done < <(split_values "${MODS:-}")
 
+write_install_txt
+record_workshop_ids_from_install_txt "$mods_dir/install.txt"
+
 if [[ -n "$(trim "${ENABLED_MODS_FILE:-}")" ]]; then
   enabled_file="${ENABLED_MODS_FILE}"
   [[ "$enabled_file" = /* ]] || enabled_file="/data/$enabled_file"
   [[ -f "$enabled_file" ]] || die "ENABLED_MODS_FILE was set but not found: $enabled_file"
   copy_enabled_json "$enabled_file"
+  enabled_json_from_env=TRUE
 elif [[ -n "$(trim "${ENABLED_MODS:-}")" ]]; then
   split_values "$ENABLED_MODS" | jq -R . | jq -s . > "$mods_dir/enabled.json"
+  enabled_json_configured=TRUE
+  enabled_json_from_env=TRUE
   log "Generated enabled.json from ENABLED_MODS"
-elif truthy "${MODS_ENABLE_ALL:-FALSE}"; then
-  find "$mods_dir" -maxdepth 1 -type f -name '*.tmod' -printf '%f\n' \
-    | sed 's/\.tmod$//' \
-    | sort \
-    | jq -R . \
-    | jq -s . > "$mods_dir/enabled.json"
-  log "Generated enabled.json for all .tmod files"
 fi
 
 if truthy "${MODS_SYNC:-FALSE}" && [[ -f "$managed_manifest" ]]; then
@@ -165,6 +314,8 @@ sort -u "$new_manifest" > "$managed_manifest"
 
 install_workshop_mods=FALSE
 if truthy "${TML_INSTALL_WORKSHOP_MODS:-FALSE}"; then
+  install_workshop_mods=TRUE
+elif truthy "$steam_workshop_collection_sources"; then
   install_workshop_mods=TRUE
 elif [[ -n "$(trim "${MODPACK_SOURCE:-}")" ]] && truthy "${MODPACK_INSTALL_WORKSHOP:-TRUE}"; then
   install_workshop_mods=TRUE
@@ -186,5 +337,15 @@ if truthy "$install_workshop_mods" && [[ -f "$mods_dir/install.txt" ]]; then
     (cd "$tml_install_dir" && ./manage-tModLoaderServer.sh install-mods --folder "$tml_install_dir") || die "tModLoader install-mods failed"
   else
     warn "install.txt exists, but manage-tModLoaderServer.sh was not found in the tModLoader installation"
+  fi
+fi
+
+if truthy "${MODS_ENABLE_ALL:-FALSE}" && ! truthy "$enabled_json_from_env"; then
+  generate_enabled_json_from_installed_tmods
+elif truthy "$steam_workshop_collection_sources" && ! truthy "$enabled_json_configured"; then
+  if [[ -f "$mods_dir/enabled.json" ]]; then
+    warn "Steam Workshop collection was installed, but existing enabled.json was left unchanged"
+  else
+    generate_enabled_json_from_installed_tmods
   fi
 fi
