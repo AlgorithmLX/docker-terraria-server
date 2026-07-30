@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+source /image/scripts/common.sh
+
+install_dir="${DOTNET_INSTALL_DIR:-/data/server/dotnet}"
+marker="${install_dir}/.installed-runtime"
+dotnet_bin="$install_dir/dotnet"
+channel="$(trim "${DOTNET_CHANNEL:-9.0}")"
+version="$(trim "${DOTNET_VERSION:-}")"
+script_url="${DOTNET_INSTALL_SCRIPT_URL:-https://dot.net/v1/dotnet-install.sh}"
+requested="${version:-channel:$channel}"
+
+if [[ -x "$dotnet_bin" ]] && [[ -f "$marker" ]] && [[ "$(cat "$marker")" == "$requested" ]] && ! truthy "${DOTNET_FORCE_INSTALL:-FALSE}"; then
+  log ".NET runtime $requested is already installed"
+  exit 0
+fi
+
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+mkdir -p "$install_dir"
+install_script="$tmp_dir/dotnet-install.sh"
+download "$script_url" "$install_script" "${DOTNET_FORCE_INSTALL:-FALSE}"
+chmod +x "$install_script"
+
+if [[ -n "$version" ]]; then
+  bash "$install_script" --runtime dotnet --version "$version" --install-dir "$install_dir" --no-path
+else
+  bash "$install_script" --runtime dotnet --channel "$channel" --install-dir "$install_dir" --no-path
+fi
+
+[[ -x "$dotnet_bin" ]] || die ".NET runtime installer did not create $dotnet_bin"
+printf '%s' "$requested" > "$marker"
+
+log "Installed .NET runtime $requested"

@@ -41,7 +41,8 @@ normalize_type() {
   case "$(upper "${1:-VANILLA}")" in
     VANILLA|TERRARIA) printf 'VANILLA' ;;
     TML|TMODLOADER|MODDED) printf 'TML' ;;
-    *) die "Unsupported TYPE='${1:-}'. Use VANILLA or TML." ;;
+    TSHOCK|TS) printf 'TSHOCK' ;;
+    *) die "Unsupported TYPE='${1:-}'. Use VANILLA, TML, or TSHOCK." ;;
   esac
 }
 

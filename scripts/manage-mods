@@ -8,6 +8,8 @@ type="$(normalize_type "${TYPE:-VANILLA}")"
 mods_dir="${TML_MOD_PATH:-/data/tModLoader/Mods}"
 tml_install_dir="${TML_INSTALL_DIR:-/data/server/tModLoader}"
 managed_manifest="/data/.managed-mods"
+download_cache_dir="${MODS_DOWNLOAD_CACHE_DIR:-/data/.mod-downloads}"
+workshop_state_file="/data/.managed-workshop-install.sha256"
 new_manifest="$(mktemp)"
 workshop_install_entries="$(mktemp)"
 workshop_source_ids="$(mktemp)"
@@ -34,6 +36,12 @@ fi
 copy_tmod() {
   local src="$1"
   local dest="$mods_dir/$(basename "$src")"
+
+  if [[ -f "$dest" ]] && cmp -s "$src" "$dest" && ! truthy "${MODS_FORCE_DOWNLOAD:-FALSE}"; then
+    printf '%s\n' "$dest" >> "$new_manifest"
+    return
+  fi
+
   cp -f "$src" "$dest"
   printf '%s\n' "$dest" >> "$new_manifest"
   log "Installed mod $(basename "$dest")"
@@ -99,35 +107,54 @@ queue_workshop_id() {
   workshop_install_entries_present=TRUE
 }
 
-process_steam_workshop_collection() {
+process_steam_workshop_url() {
   local source="$1"
-  local collection_id response result ids_file count
+  local published_file_id response result ids_file count item_response item_result app_id title
 
-  collection_id="$(steam_published_file_id_from_url "$source")" || die "Steam Workshop URL does not contain an id parameter: $source"
+  published_file_id="$(steam_published_file_id_from_url "$source")" || die "Steam Workshop URL does not contain an id parameter: $source"
 
-  log "Resolving Steam Workshop collection $collection_id"
+  log "Resolving Steam Workshop item $published_file_id"
   response="$(curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 20 \
     -X POST \
     --data-urlencode "collectioncount=1" \
-    --data-urlencode "publishedfileids[0]=$collection_id" \
+    --data-urlencode "publishedfileids[0]=$published_file_id" \
     "https://api.steampowered.com/ISteamRemoteStorage/GetCollectionDetails/v1/")" \
-    || die "Could not resolve Steam Workshop collection $collection_id"
+    || die "Could not resolve Steam Workshop item $published_file_id"
 
   result="$(jq -r '.response.collectiondetails[0].result // empty' <<< "$response")"
-  [[ "$result" == "1" ]] || die "Steam Workshop collection $collection_id could not be read"
+  if [[ "$result" == "1" ]]; then
+    ids_file="$tmp_dir/steam-collection-$published_file_id.ids"
+    jq -r '.response.collectiondetails[0].children[]?.publishedfileid' <<< "$response" > "$ids_file"
+    count="$(wc -l < "$ids_file" | tr -d '[:space:]')"
+    [[ "$count" -gt 0 ]] || die "Steam Workshop collection $published_file_id contains no public workshop items"
 
-  ids_file="$tmp_dir/steam-collection-$collection_id.ids"
-  jq -r '.response.collectiondetails[0].children[]?.publishedfileid' <<< "$response" > "$ids_file"
-  count="$(wc -l < "$ids_file" | tr -d '[:space:]')"
-  [[ "$count" -gt 0 ]] || die "Steam Workshop collection $collection_id contains no public workshop items"
+    while IFS= read -r id || [[ -n "$id" ]]; do
+      [[ -z "$id" ]] && continue
+      queue_workshop_id "$id"
+    done < "$ids_file"
 
-  while IFS= read -r id || [[ -n "$id" ]]; do
-    [[ -z "$id" ]] && continue
-    queue_workshop_id "$id"
-  done < "$ids_file"
+    steam_workshop_collection_sources=TRUE
+    log "Resolved Steam Workshop collection $published_file_id with $count workshop item(s)"
+    return
+  fi
 
+  item_response="$(curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 20 \
+    -X POST \
+    --data-urlencode "itemcount=1" \
+    --data-urlencode "publishedfileids[0]=$published_file_id" \
+    "https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/")" \
+    || die "Could not resolve Steam Workshop item $published_file_id"
+
+  item_result="$(jq -r '.response.publishedfiledetails[0].result // empty' <<< "$item_response")"
+  [[ "$item_result" == "1" ]] || die "Steam Workshop item $published_file_id could not be read"
+
+  app_id="$(jq -r '.response.publishedfiledetails[0].consumer_app_id // empty' <<< "$item_response")"
+  [[ "$app_id" == "1281930" ]] || die "Steam Workshop item $published_file_id is not a tModLoader workshop item"
+
+  title="$(jq -r '.response.publishedfiledetails[0].title // empty' <<< "$item_response")"
+  queue_workshop_id "$published_file_id"
   steam_workshop_collection_sources=TRUE
-  log "Resolved Steam Workshop collection $collection_id with $count workshop item(s)"
+  log "Queued Steam Workshop item $published_file_id${title:+ ($title)}"
 }
 
 write_install_txt() {
@@ -141,8 +168,12 @@ write_install_txt() {
   count="$(wc -l < "$tmp_output" | tr -d '[:space:]')"
   [[ "$count" -gt 0 ]] || return 0
 
-  cp -f "$tmp_output" "$output"
-  log "Installed install.txt with $count workshop item(s)"
+  if [[ -f "$output" ]] && cmp -s "$tmp_output" "$output"; then
+    log "install.txt is up to date with $count workshop item(s)"
+  else
+    cp -f "$tmp_output" "$output"
+    log "Installed install.txt with $count workshop item(s)"
+  fi
 }
 
 record_workshop_ids_from_install_txt() {
@@ -173,6 +204,59 @@ ensure_tml_management_script() {
     chmod +x "$script"
     log "Installed tModLoader management script"
   fi
+}
+
+workshop_install_checksum() {
+  sha256sum "$mods_dir/install.txt" | awk '{print $1}'
+}
+
+workshop_tmods_missing() {
+  local id item_dir
+
+  [[ -s "$workshop_source_ids" ]] || return 1
+
+  while IFS= read -r id || [[ -n "$id" ]]; do
+    [[ "$id" =~ ^[0-9]+$ ]] || continue
+    item_dir="$tml_install_dir/steamapps/workshop/content/1281930/$id"
+    if [[ ! -d "$item_dir" ]] || ! find "$item_dir" -type f -name '*.tmod' -print -quit | grep -q .; then
+      return 0
+    fi
+  done < <(awk '!seen[$0]++' "$workshop_source_ids")
+
+  return 1
+}
+
+should_install_workshop_mods() {
+  local checksum previous_checksum
+
+  [[ -f "$mods_dir/install.txt" ]] || return 1
+
+  if truthy "${MODS_FORCE_DOWNLOAD:-FALSE}" || truthy "${TML_INSTALL_WORKSHOP_MODS_FORCE:-FALSE}"; then
+    return 0
+  fi
+
+  checksum="$(workshop_install_checksum)"
+  previous_checksum=""
+  [[ -f "$workshop_state_file" ]] && previous_checksum="$(trim "$(cat "$workshop_state_file")")"
+
+  if [[ "$checksum" != "$previous_checksum" ]]; then
+    if [[ -z "$previous_checksum" ]] && ! workshop_tmods_missing; then
+      mark_workshop_mods_installed
+      return 1
+    fi
+    return 0
+  fi
+
+  if workshop_tmods_missing; then
+    warn "Workshop install state is current, but one or more downloaded .tmod files are missing"
+    return 0
+  fi
+
+  return 1
+}
+
+mark_workshop_mods_installed() {
+  workshop_install_checksum > "$workshop_state_file"
 }
 
 generate_enabled_json_from_installed_tmods() {
@@ -244,13 +328,15 @@ process_source() {
   local resolved="$source"
 
   if is_steam_workshop_url "$source"; then
-    process_steam_workshop_collection "$source"
+    process_steam_workshop_url "$source"
     return
   elif is_url "$source"; then
-    local name
+    local name cache_key
     name="$(safe_basename_from_url "$source")"
     [[ -n "$name" && "$name" != "/" ]] || name="downloaded-mod"
-    resolved="$tmp_dir/$name"
+    cache_key="$(printf '%s' "$source" | sha256sum | awk '{print $1}')"
+    mkdir -p "$download_cache_dir"
+    resolved="$download_cache_dir/$cache_key-$name"
     download "$source" "$resolved" "${MODS_FORCE_DOWNLOAD:-FALSE}"
   elif [[ "$source" == file://* ]]; then
     resolved="${source#file://}"
@@ -339,7 +425,9 @@ fi
 
 if truthy "$install_workshop_mods" && [[ -f "$mods_dir/install.txt" ]]; then
   ensure_tml_management_script
-  if [[ -x "$tml_install_dir/manage-tModLoaderServer.sh" ]]; then
+  if ! should_install_workshop_mods; then
+    log "Workshop mods are already installed for current install.txt"
+  elif [[ -x "$tml_install_dir/manage-tModLoaderServer.sh" ]]; then
     if [[ "$mods_dir" != "$tml_install_dir/Mods" ]]; then
       rm -rf "$tml_install_dir/Mods"
       ln -s "$mods_dir" "$tml_install_dir/Mods"
@@ -352,6 +440,11 @@ if truthy "$install_workshop_mods" && [[ -f "$mods_dir/install.txt" ]]; then
     fi
     warn "Running tModLoader DedicatedServerUtils install-mods. SteamCMD may be required by tModLoader."
     (cd "$tml_install_dir" && ./manage-tModLoaderServer.sh install-mods --folder "$tml_install_dir") || die "tModLoader install-mods failed"
+    if workshop_tmods_missing; then
+      warn "Workshop install finished, but one or more downloaded .tmod files were not found"
+    else
+      mark_workshop_mods_installed
+    fi
   else
     warn "install.txt exists, but manage-tModLoaderServer.sh was not found in the tModLoader installation"
   fi

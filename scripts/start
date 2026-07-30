@@ -45,25 +45,59 @@ append_tml_steam_args() {
   fi
 }
 
-if [[ "$type" == "VANILLA" ]]; then
-  /image/scripts/install-vanilla
-  install_dir="${VANILLA_INSTALL_DIR:-/data/server/vanilla}"
-  if [[ -x "$install_dir/TerrariaServer.bin.x86_64" ]]; then
-    server_bin="$install_dir/TerrariaServer.bin.x86_64"
-  elif [[ -x "$install_dir/TerrariaServer" ]]; then
-    server_bin="$install_dir/TerrariaServer"
-  else
-    die "Could not find a runnable Vanilla Terraria server binary in $install_dir"
-  fi
-  command=("$server_bin" "-config" "$config_path")
-else
-  /image/scripts/prepare-modpack
-  /image/scripts/install-tml
-  install_dir="${TML_INSTALL_DIR:-/data/server/tModLoader}"
-  /image/scripts/manage-mods
-  command=("$install_dir/start-tModLoaderServer.sh" "-config" "$config_path" "-tmlsavedirectory" "${TML_SAVE_DIR:-/data/tModLoader}")
-  append_tml_steam_args
-fi
+case "$type" in
+  VANILLA)
+    /image/scripts/install-vanilla
+    install_dir="${VANILLA_INSTALL_DIR:-/data/server/vanilla}"
+    if [[ -x "$install_dir/TerrariaServer.bin.x86_64" ]]; then
+      server_bin="$install_dir/TerrariaServer.bin.x86_64"
+    elif [[ -x "$install_dir/TerrariaServer" ]]; then
+      server_bin="$install_dir/TerrariaServer"
+    else
+      die "Could not find a runnable Vanilla Terraria server binary in $install_dir"
+    fi
+    command=("$server_bin" "-config" "$config_path")
+    ;;
+  TML)
+    /image/scripts/prepare-modpack
+    /image/scripts/install-tml
+    install_dir="${TML_INSTALL_DIR:-/data/server/tModLoader}"
+    /image/scripts/manage-mods
+    command=("$install_dir/start-tModLoaderServer.sh" "-config" "$config_path" "-tmlsavedirectory" "${TML_SAVE_DIR:-/data/tModLoader}")
+    append_tml_steam_args
+    ;;
+  TSHOCK)
+    /image/scripts/install-tshock
+    install_dir="${TSHOCK_INSTALL_DIR:-/data/server/TShock}"
+    dotnet_root="${DOTNET_INSTALL_DIR:-/data/server/dotnet}"
+    tshock_config_dir="${TSHOCK_CONFIG_DIR:-/data/tshock}"
+    tshock_log_dir="${TSHOCK_LOG_DIR:-$tshock_config_dir/logs}"
+    tshock_crash_dir="${TSHOCK_CRASH_DIR:-$tshock_config_dir/crashes}"
+    tshock_plugin_dir="${TSHOCK_PLUGIN_DIR:-$tshock_config_dir/plugins}"
+    tshock_world_path="${WORLD_PATH:-/data/worlds}"
+
+    mkdir -p "$tshock_config_dir" "$tshock_log_dir" "$tshock_crash_dir" "$tshock_plugin_dir" "$tshock_world_path"
+    export DOTNET_ROOT="$dotnet_root"
+    export PATH="$DOTNET_ROOT:$PATH"
+
+    if [[ -f "$install_dir/TShock.Server.dll" ]]; then
+      command=("$dotnet_root/dotnet" "$install_dir/TShock.Server.dll")
+    elif [[ -x "$install_dir/TShock.Server" ]]; then
+      command=("$install_dir/TShock.Server")
+    else
+      die "Could not find a runnable TShock server in $install_dir"
+    fi
+
+    command+=(
+      "-config" "$config_path"
+      "-configpath" "$tshock_config_dir"
+      "-logpath" "$tshock_log_dir"
+      "-crashdir" "$tshock_crash_dir"
+      "-worldselectpath" "$tshock_world_path"
+      "-additionalplugins" "$tshock_plugin_dir"
+    )
+    ;;
+esac
 
 /image/scripts/render-config "$config_path"
 
@@ -108,7 +142,5 @@ if truthy "${ENABLE_COMMAND_PIPE:-TRUE}"; then
   server_pid="$!"
   wait "$server_pid"
 else
-  "${command[@]}" &
-  server_pid="$!"
-  wait "$server_pid"
+  exec "${command[@]}"
 fi

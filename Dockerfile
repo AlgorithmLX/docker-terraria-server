@@ -7,7 +7,7 @@ ARG TERRARIA_UID=1000
 ARG TERRARIA_GID=1000
 
 RUN if [[ -n "${TARGETARCH}" && "${TARGETARCH}" != "amd64" ]]; then \
-      echo "Terraria dedicated server and tModLoader are supported by this image on linux/amd64 only"; \
+      echo "Terraria dedicated server, tModLoader, and TShock are supported by this image on linux/amd64 only"; \
       exit 1; \
     fi
 
@@ -47,7 +47,7 @@ COPY --chmod=755 scripts/ /image/scripts/
 
 RUN ln -s /image/scripts/send-command /usr/local/bin/send-command
 
-EXPOSE 7777/tcp 7777/udp
+EXPOSE 7777/tcp 7777/udp 7878/tcp
 VOLUME ["/data"]
 WORKDIR /data
 STOPSIGNAL SIGTERM
@@ -57,6 +57,7 @@ ENV TYPE=VANILLA \
     TERRARIA_VERSION= \
     TML_VERSION= \
     TML_CHANNEL=stable \
+    TSHOCK_VERSION=LATEST \
     PORT=7777 \
     WORLD_NAME=world \
     WORLD= \
@@ -80,6 +81,7 @@ ENV TYPE=VANILLA \
     CONSOLE_FIFO=/tmp/terraria/console.fifo \
     MODS= \
     MODS_FILE= \
+    MODS_DOWNLOAD_CACHE_DIR=/data/.mod-downloads \
     MODS_SYNC=FALSE \
     MODS_FORCE_DOWNLOAD=FALSE \
     MODS_ENABLE_ALL=FALSE \
@@ -96,12 +98,24 @@ ENV TYPE=VANILLA \
     MODPACK_APPLY_CONFIGS=TRUE \
     VANILLA_INSTALL_DIR=/data/server/vanilla \
     TML_INSTALL_DIR=/data/server/tModLoader \
+    TSHOCK_INSTALL_DIR=/data/server/TShock \
+    TSHOCK_CONFIG_DIR=/data/tshock \
+    TSHOCK_LOG_DIR=/data/tshock/logs \
+    TSHOCK_CRASH_DIR=/data/tshock/crashes \
+    TSHOCK_PLUGIN_DIR=/data/tshock/plugins \
+    TSHOCK_FORCE_DOWNLOAD=FALSE \
+    DOTNET_INSTALL_DIR=/data/server/dotnet \
+    DOTNET_CHANNEL=9.0 \
+    DOTNET_VERSION= \
+    DOTNET_INSTALL_SCRIPT_URL=https://dot.net/v1/dotnet-install.sh \
+    DOTNET_FORCE_INSTALL=FALSE \
     TML_MANAGE_SCRIPT_REF=stable \
     TML_MANAGE_SCRIPT_URL= \
     TML_MANAGE_SCRIPT_FORCE_DOWNLOAD=FALSE \
     TML_SAVE_DIR=/data/tModLoader \
     TML_MOD_PATH=/data/tModLoader/Mods \
     TML_INSTALL_WORKSHOP_MODS=FALSE \
+    TML_INSTALL_WORKSHOP_MODS_FORCE=FALSE \
     STEAM_LOBBY=NONE \
     STEAM_WORKSHOP_FOLDER= \
     STEAMCMD_AUTO_INSTALL=TRUE \

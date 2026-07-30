@@ -6,7 +6,7 @@ port="${PORT:-7777}"
 method="${HEALTH_METHOD:-tcp}"
 
 if [[ "$method" == "process" ]]; then
-  pgrep -f 'TerrariaServer|tModLoader' >/dev/null
+  pgrep -f 'TerrariaServer|tModLoader|TShock.Server' >/dev/null
   exit $?
 fi
 

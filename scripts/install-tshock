@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+source /image/scripts/common.sh
+
+install_dir="${TSHOCK_INSTALL_DIR:-/data/server/TShock}"
+marker="${install_dir}/.installed-version"
+requested="$(trim "${TSHOCK_VERSION:-}")"
+
+if [[ -z "$requested" ]]; then
+  requested="${VERSION:-LATEST}"
+fi
+
+requested="$(trim "$requested")"
+requested="${requested:-LATEST}"
+
+normalize_tshock_tag() {
+  local value
+  value="$(trim "$1")"
+  value="${value#v}"
+  printf 'v%s' "$value"
+}
+
+resolve_tshock_release() {
+  local version="$1"
+
+  if is_url "$version"; then
+    printf '%s\t%s\n' "$(safe_basename_from_url "$version")" "$version"
+    return
+  fi
+
+  local api
+  if [[ "$(upper "$version")" == "LATEST" ]]; then
+    api="https://api.github.com/repos/Pryaxis/TShock/releases/latest"
+  else
+    api="https://api.github.com/repos/Pryaxis/TShock/releases/tags/$(normalize_tshock_tag "$version")"
+  fi
+
+  curl -fsSL "$api" \
+    | jq -r '
+        . as $release
+        | $release.assets[]
+        | select(.name | test("linux-x64-Release\\.zip$"))
+        | [$release.tag_name, .browser_download_url]
+        | @tsv'
+}
+
+release_line="$(resolve_tshock_release "$requested")"
+[[ -n "$release_line" && "$release_line" != "null" ]] || die "Could not resolve TShock release for TSHOCK_VERSION='$requested'"
+
+if [[ "$release_line" == *$'\t'* ]]; then
+  resolved_tag="${release_line%%$'\t'*}"
+  download_url="${release_line#*$'\t'}"
+else
+  resolved_tag="$requested"
+  download_url="$release_line"
+fi
+
+if [[ -f "$marker" ]] && [[ "$(cat "$marker")" == "$resolved_tag" ]] && [[ -f "$install_dir/TShock.Server.dll" ]] && ! truthy "${FORCE_REINSTALL:-FALSE}"; then
+  log "TShock $resolved_tag is already installed"
+  /image/scripts/install-dotnet-runtime
+  exit 0
+fi
+
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+archive="$tmp_dir/TShock.zip"
+download "$download_url" "$archive" "${TSHOCK_FORCE_DOWNLOAD:-FALSE}"
+
+rm -rf "$install_dir"
+mkdir -p "$install_dir"
+unzip -q "$archive" -d "$tmp_dir/extracted"
+
+if [[ -f "$tmp_dir/extracted/TShock.Server.dll" ]]; then
+  cp -a "$tmp_dir/extracted/." "$install_dir/"
+else
+  first_dir="$(find "$tmp_dir/extracted" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+  [[ -n "$first_dir" ]] || die "Downloaded TShock archive is empty"
+  cp -a "$first_dir/." "$install_dir/"
+fi
+
+find "$install_dir" -type f \( -name '*.sh' -o -name 'TShock.Server' \) -exec chmod +x {} + 2>/dev/null || true
+
+[[ -f "$install_dir/TShock.Server.dll" ]] || die "TShock archive does not contain TShock.Server.dll"
+printf '%s' "$resolved_tag" > "$marker"
+
+/image/scripts/install-dotnet-runtime
+
+log "Installed TShock $resolved_tag"
