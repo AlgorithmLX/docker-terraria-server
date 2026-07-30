@@ -1,4 +1,4 @@
-# Docker Terraria Server
+# Terra Server (aka Docker Terraria Server)
 
 Docker image for a Terraria dedicated server with an environment-variable UX similar to `itzg/docker-minecraft-server`: automatic install/update at startup, persistent `/data`, generated server config, Vanilla, tModLoader, or TShock mode, mod handling, healthcheck, and `docker exec` console commands.
 
